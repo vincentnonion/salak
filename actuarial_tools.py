@@ -414,6 +414,7 @@ class CashFlowGetterFactory:
 
     @staticmethod
     def ratioDictExcelReader(file) -> dict:
+        pass
 
 
 
