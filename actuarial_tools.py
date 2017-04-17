@@ -3,9 +3,9 @@ This module defined tools for actuarial computation, including:
 
 ..py:class:: ModelPoint 模型点
 ..py:class:: TimeScale 现金流的时间类型， 年度还是月度
-..py:class:: CashFlowType 现金计算类型, 与何相关 
-..py:class:: CashFlowSA 与保额相关现金流 
-..py:class:: CashFlowPrem 与保费相关现金流 
+..py:class:: CashFlowType 现金计算类型, 与何相关
+..py:class:: CashFlowSA 与保额相关现金流
+..py:class:: CashFlowPrem 与保费相关现金流
 
 ...
 
@@ -14,12 +14,15 @@ import calendar
 from abc import ABCMeta, abstractmethod
 from datetime import date
 from enum import Flag, auto, Enum
-from typing import Optional, Union, Dict, Any, Callable
+from typing import Optional, Union, Dict, Any, Callable, Iterable
 from copy import deepcopy
 import xlwings as xw
 from numpy import ndarray, concatenate, zeros, ones, array, full, repeat
+import pandas as pd
+import excel_tools 
 
 
+@excel_tools.ExcelSupportManager.peakableClass
 class ModelPoint:
     """
         ModelPoint Class, represent a model point
@@ -28,21 +31,21 @@ class ModelPoint:
     def __init__(self, sex: int, age: int, policy_term: Union[str, int], payment_term: Union[str, int], policy_year: Optional[int]=None, policy_month: Optional[int]=None, **kwargs):  # **kwargs 表示可变长度参数 key word arguments
         """
         建立一个新的模型点
-        
+
         Example:
-        
+
         >>> mp1 = ModelPoint(0, 10, 30, 5)
         >>> mp2 = ModelPoint(0, 10, '30@', '15')
         >>> mp3 = ModelPoint(0, 10, '@30', '15@')
-        
+
         >>> ModelPoint(0, 10, 30, 5).sex
         0
         >>> ModelPoint(0, 10, 30, 5).payment_term
         5
         >>> ModelPoint(0, 10, '@30', '5@').policy_term
         20
-        
-        
+
+
         :param int sex: 性别
         :param int age: 年龄
         :param Union[str, int] policy_term: 保险期间 若为str 则须为 '20'， '@20'， '20@' 之一
@@ -54,7 +57,6 @@ class ModelPoint:
         # 变量检查：
         assert policy_year is None or 1 <= policy_year
         assert policy_month is None or 1 <= policy_month <= 12
-
 
         # 生成 对象属性（instance attribute)，即定义在对象中的变量
         self.sex: int = sex
@@ -80,9 +82,9 @@ class ModelPoint:
     def convert_term(term: Union[str, int], age: Optional[int]=None) -> int:
         """
         将 字符类型 的 term 转化为 数字， 如 10 岁 保至 30 岁 则返回 20, 当 term 非 至XX岁这一情况， age可以不提供
-        
+
         Example:
-        
+
         >>> ModelPoint.convert_term('20')
         20
         >>> ModelPoint.convert_term(20)
@@ -91,8 +93,8 @@ class ModelPoint:
         20
         >>> ModelPoint.convert_term('@30', age=15)
         15
-        
-        :param Union[str, int] term: 某种期间  
+
+        :param Union[str, int] term: 某种期间
         :param Optional[int] age: 年龄， 为应对 至XX岁这一情况
         :return: 实际期间
         :rtype: int
@@ -112,18 +114,18 @@ class ModelPoint:
     def index_policy_year(self) -> Optional[int]:
         """
         计算用于 slicing 的policy year
-        
+
         Example:
-        
+
         >>> mp = ModelPoint(0, 10, 5, 5, 2, 3)
         >>> mp.index_policy_year
         1
-        
+
         >>> benefit = [1.0] * mp.policy_term
         >>> benefit_left = benefit[mp.index_policy_year:]
         >>> benefit_left
         [1.0, 1.0, 1.0, 1.0]
-        
+
         :return: policy_year - 1
         """
         try:
@@ -135,18 +137,18 @@ class ModelPoint:
     def index_policy_month(self) -> Optional[int]:
         """
         计算用于 slicing 的policy month
-        
+
         Example:
-        
+
         >>> mp = ModelPoint(0, 10, 5, 5, 2, 3)
         >>> mp.index_policy_month
         14
-        
+
         >>> benefit_yr = [1.0] * mp.policy_term
         >>> from functools import reduce
         >>> benefit_mth = reduce(lambda a, b: a + b, ([b]*12 for b in benefit_yr))
         >>> left_benefit_of_month = benefit_mth[mp.index_policy_month:]
-        
+
         :return: index_policy_year * 12 + policy_month - 1
         """
         try:
@@ -185,7 +187,7 @@ class ModelPoint:
     def copy_as_initiate(self):
         """
         返回自身的一个深拷贝 只是保单时刻为发单时刻
-        
+
         :rtype: ModelPoint
         """
         mp = self.copy()
@@ -195,7 +197,7 @@ class ModelPoint:
 
     @property
     def gross_premium(self) -> Optional[float]:
-        """ 
+        """
         毛保费
 
         Example:
@@ -252,6 +254,7 @@ class TimeScale(Enum):
     YEAR = auto()
     MONTH = auto()
 
+
 YEAR = TimeScale.YEAR
 MONTH = TimeScale.MONTH
 
@@ -264,15 +267,15 @@ class CashFlowType(metaclass=ABCMeta):
     def __init_subclass__(cls, **kwargs):
         """
         收集子类信息
-        
+
         >>> class A(CashFlowType):
         ...     id=10
         >>> A.__name__
         'A'
         >>> CashFlowType.A.id
         10
-                
-        :param kwargs: 冗余参数 
+
+        :param kwargs: 冗余参数
         """
         super().__init_subclass__(**kwargs)
         if hasattr(CashFlowType, cls.__name__):
@@ -289,7 +292,6 @@ class CashFlowType(metaclass=ABCMeta):
 
     def __init__(self, ratio: float=None):
         """
-        
         :param ratio:  责任占比
         """
         self.ratio = ratio
@@ -300,25 +302,26 @@ class CashFlowType(metaclass=ABCMeta):
         """
         通过 self.ratio 返回模型点在此责任下的 **不考虑概率、未贴现** 的现金流
         请重载此函数
-        
+
         :param bool forMonth: 是否返回月度现金流 默认 True
         :param bool fromInit: 是否从发单时刻算起 默认 False
         :param ModelPoint mp: 模型点
-        :return: 
+        :return:
         """
         pass
 
 
 class CashFlowSA(CashFlowType):
     """ 与保额成比例的现金流类型 """
+
     def getCashFlow(self, *, mp: ModelPoint, fromInit: bool=False, forMonth: bool=True) -> ndarray:
         """
         根据模型点保额返回 **未考虑概率未贴现** 的现金流
-        
+
         :param bool forMonth: 是否返回月度现金流 默认 True
         :param bool fromInit: 是否从发单时刻算起 默认 False
         :param ModelPoint mp: 模型点
-        :return: 
+        :return:
         """
         try:
             yearRatio = full(mp.policy_term, self.ratio * mp.sum_assured)
@@ -361,7 +364,6 @@ class CashFlowPrem(CashFlowType):
 class CashFlowGetterFactory:
     """
     用来生产 满足条件的 getCashFlow 函数 的帮助类
-    
     """
     PAYMENT_TREM = "PaymentTerm"
     """  """
@@ -369,12 +371,34 @@ class CashFlowGetterFactory:
     PAYMENT_TREM_AGE = "PaymentTerm_Age"
     DICT_TYPE = (PAYMENT_TREM, AGE, PAYMENT_TREM_AGE)
     """ 支持的字典存储方式的类型 """
-    def __init__(self, ratioDict: dict, dictType: str):
+
+    def __init__(self, dictType: str, *, ratioDict: dict=None, ratioDataFrame: pd.DataFrame=None):
+        """
+        >>> import openpyxl as pxl
+        >>> from io_tools import read_sheet
+        >>> wb = pxl.load_workbook("test.xlsx", data_only=True)  # data_only=True force excel formula as there computed values
+        >>> ws = wb.active
+        >>> df = read_sheet(ws, index_col=[0,1])
+        >>> getCashFlow = CashFlowGetterFactory(CashFlowGetterFactory.PAYMENT_TREM_AGE, ratioDataFrame=df)
+        """
         assert dictType in self.DICT_TYPE
-        self.ratioDict = self._forceKeyAsInt_(ratioDict)
+        assert ratioDict is not None or ratioDataFrame is not None
+        if ratioDict is not None:
+            self.ratioDict = self._forceKeyAsInt_(ratioDict)
+        else:
+            self.ratioDict = self._forceKeyAsInt_(self._genRatioDictFromDataFrame_(df=ratioDataFrame))
         """ 比例字典 """
         self.dictType = dictType
         """ 比例字典存储的方式 """
+
+    @classmethod
+    def _genRatioDictFromDataFrame_(cls, df: pd.DataFrame) -> dict:
+        index = df.index
+        try:
+            generator = ((k, cls._genRatioDictFromDataFrame_(df.loc[k])) for k in index.levels[0])
+        except (AttributeError, IndexError):
+            generator = ((k, df.loc[k].values) for k in index.values)
+        return dict(generator)
 
     @classmethod
     def _forceKeyAsInt_(cls, d: dict) -> dict:
@@ -393,10 +417,10 @@ class CashFlowGetterFactory:
     def __call__(self, mp: ModelPoint, *, fromInit: bool=False, timeScale: TimeScale=MONTH):
         """
         根据模型点计算现金流比例
-        
-        :param ModelPoint mp: 
-        :param bool fromInit: 
-        :param TimeScale timeScale: 
+
+        :param ModelPoint mp: 模型点
+        :param bool fromInit: 是否从发单时刻开始
+        :param TimeScale timeScale: 结果的时间尺度
         :return: 现金流比例
         """
         if self.dictType == self.AGE:
@@ -404,19 +428,13 @@ class CashFlowGetterFactory:
         elif self.dictType == self.PAYMENT_TREM:
             raw = self.ratioDict[mp.payment_term]
         else:
-            raw  = self.ratioDict[mp.payment_term][mp.age]
-        l = len(raw)
-        yearRatio = array(raw)[:mp.policy_term] if mp.policy_term <= l else concatenate((raw, full(mp.policy_term - l, raw[-1])))
+            raw = self.ratioDict[mp.payment_term][mp.age]
+        length = len(raw)
+        yearRatio = array(raw)[:mp.policy_term] if mp.policy_term <= length else concatenate((raw, full(mp.policy_term - length, raw[-1])))
         if timeScale is YEAR:
             return yearRatio if fromInit else yearRatio[mp.index_policy_year]
         elif timeScale is MONTH:
-            return repeat(yearRatio, 12)[mp.index_policy_month: ] if not fromInit else repeat(yearRatio, 12)
-
-    @staticmethod
-    def ratioDictExcelReader(file) -> dict:
-        pass
-
-
+            return repeat(yearRatio, 12)[mp.index_policy_month:] if not fromInit else repeat(yearRatio, 12)
 
 
 class __CashFlowCatMeta__(ABCMeta):
@@ -425,8 +443,8 @@ class __CashFlowCatMeta__(ABCMeta):
         """
         判断一个现金流类型是否属于另一个现金流类型
 
-        :param item: a class object or a instance 
-        :return: 
+        :param item: a class object or a instance
+        :return:
         """
         try:
             return issubclass(item, cls) or isinstance(item, cls)
@@ -436,6 +454,10 @@ class __CashFlowCatMeta__(ABCMeta):
 
 class CashFlowCat(metaclass=__CashFlowCatMeta__):
     """ 现金流类型 """
+
+    DEFAULT_TIME = None
+    """ 默认现金流发生时间 """
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         if hasattr(CashFlowCat, cls.__name__):
@@ -473,12 +495,20 @@ class CashFlowCat(metaclass=__CashFlowCatMeta__):
         else:
             raise TypeError("Only CashFlowType.SubLiabilityType is legal")
 
-    def __init__(self, cashFlowType: CashFlowType, *, time=None, getCashFlow: Optional[Callable]=None):
+    def __init__(self, cashFlowType: CashFlowType, *, time=None, getCashFlow: Callable=None, index_in_product: int=None):
+        """
+        :param CashFlowType cashFlowType:
+        :param float time: 现金发生时点, 范围 为 区间 [0,1]
+        :param Callable getCashFlow: 自定义的getCashFlow函数，见CashFlowGetterFactory类
+        :param int index_in_product: 在产品中的编号, 默认由 ProductManager 根据定义顺序 初始化
+        """
         assert cashFlowType.ratio is not None or getCashFlow is not None
-        self.type=cashFlowType
+        self.type = cashFlowType
         """ 现金流基础类型 """
-        self.time = time
+        self.time = time if time is not None else self.DEFAULT_TIME
         """ 现金流产生的时刻 """
+        self.index_in_product: Optional[int] = index_in_product
+        """ 在产品中的编号"""
 
     def getCashFlow(self, mp: ModelPoint, *, fromInit: bool=False, timeScale: TimeScale=MONTH) -> ndarray:
         return self.type.getCashFlow(mp=mp, fromInit=fromInit, timeScale=timeScale)
@@ -492,7 +522,7 @@ class Benefit(CashFlow):
     """
     保险责任现金流
     """
-    pass
+    DEFAULT_TIME = 0.5
 
 
 class DeathBenefit(Benefit):
@@ -506,7 +536,7 @@ class SurvivalBenefit(Benefit):
     """
     生存保险责任
     """
-    pass
+    DEFAULT_TIME = 1.0
 
 
 class AccidentBenefit(Benefit):
@@ -537,15 +567,39 @@ class OtherIllnessBenefit(IllnessBenefit):
     pass
 
 
+class ProbabilityTable:
+    pass
+
+
 class ProductManager(type):
+
     PRODUCTS = {}
-    def __new__(mcs, name, bases, namespace, *args, **kwargs):
+
+    def __new__(mcs, name, bases, namespace, *args, prod_id=None, prod_name=None, **kwargs):
         if name in mcs.PRODUCTS:
             raise ValueError(f"Product {name} already exists")
+        if prod_id is not None:
+            namespace['prod_id'] = prod_id
+        if prod_name is not None:
+            namespace['prod_name'] = prod_name
+
+        # init CashFlow's attribute ``index_in_product``
+        cfs: List[CashFlow] = [x for x in namespace.values() if isinstance(x, CashFlow)]
+        existed_cf_indexes = [x.index_in_product for x in cfs if x.index_in_product is not None]
+        assert len(existed_cf_indexes) == len(set(existed_cf_indexes))
+        for cf, idx in zip(filter(lambda x: x.index_in_product is None, cfs), 
+            [x for x in range(len(cfs)) if x not in existed_cf_indexes][:len(cfs) - len(existed_cf_indexes)]):
+            cf.index_in_product = idx
+
+        # init cls
         cls = type.__new__(mcs, name, bases, namespace)
-        mcs.PRODUCTS[name] = cls
+        if name != "ProductBase":
+            mcs.PRODUCTS[name] = cls
         setattr(mcs, name, cls)
         return cls
+
+    def __str__(cls):
+        return f"{cls.prod_name} {cls.prod_id}"
 
 
 class ProductBase(metaclass=ProductManager):
@@ -553,8 +607,18 @@ class ProductBase(metaclass=ProductManager):
         if instance is None and owner is ProductManager:
             return self
 
+    def __init__(self, probabilityTables: Iterable[ProbabilityTable]):
+        self.probabilityTables = list(probabilityTables)
+
 
 if __name__ == '__main__':
     import doctest
+    import openpyxl as pxl
+    from io_tools import read_sheet
     print(ProductManager.PRODUCTS)
+    wb = pxl.load_workbook("test.xlsx", data_only=True)
+    ws = wb.active
+    df = read_sheet(ws, index_col=[0, 1])
+    d = CashFlowGetterFactory._genRatioDictFromDataFrame_(df)
+    print(d)
     doctest.testmod()
