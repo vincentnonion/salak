@@ -14,15 +14,14 @@ import calendar
 from abc import ABCMeta, abstractmethod
 from datetime import date
 from enum import Flag, auto, Enum
-from typing import Optional, Union, Dict, Any, Callable, Iterable
+from typing import *
 from copy import deepcopy
+from functools import reduce
 import xlwings as xw
 from numpy import ndarray, concatenate, zeros, ones, array, full, repeat
-import pandas as pd
-import excel_tools 
+import pandas as pd 
 
 
-@excel_tools.ExcelSupportManager.peakableClass
 class ModelPoint:
     """
         ModelPoint Class, represent a model point
@@ -36,7 +35,8 @@ class ModelPoint:
 
         >>> mp1 = ModelPoint(0, 10, 30, 5)
         >>> mp2 = ModelPoint(0, 10, '30@', '15')
-        >>> mp3 = ModelPoint(0, 10, '@30', '15@')
+        >>> mp3 = ModelPoint(0, 10, '@30', '15@', gross_premium=10.0)
+        
 
         >>> ModelPoint(0, 10, 30, 5).sex
         0
@@ -108,7 +108,7 @@ class ModelPoint:
             except TypeError:
                 raise ValueError(f"when you have a '@' in term, age can't be None")
         else:
-            return term
+            return int(term)
 
     @property
     def index_policy_year(self) -> Optional[int]:
@@ -162,19 +162,19 @@ class ModelPoint:
         return self.age + self.index_policy_year
 
     @staticmethod
-    def month_delta(fromDate: date, toDate: date) -> int:
+    def month_delta(from_date: date, to_date: date) -> int:
         """
         计算两个日期之间的月份间隔
 
-        :param date fromDate:
-        :param date toDate:
+        :param date from_date:
+        :param date to_date:
         :return: month num from from_date to to_date
         :rtype: int
         """
-        days_in_month = calendar.monthrange(toDate.year, toDate.month)[1]
-        imaginary_day_2 = 31 if toDate.day == days_in_month else toDate.day
-        month_delta = (toDate.month - fromDate.month) + (toDate.year - fromDate.year) * 12 + \
-                      (-1 if fromDate.day > imaginary_day_2 else 0) + 1
+        days_in_month = calendar.monthrange(to_date.year, to_date.month)[1]
+        imaginary_day_2 = 31 if to_date.day == days_in_month else to_date.day
+        month_delta = (to_date.month - from_date.month) + (to_date.year - from_date.year) * 12 + \
+                      (-1 if from_date.day > imaginary_day_2 else 0) + 1
         return month_delta
 
     def copy(self):
@@ -229,7 +229,8 @@ class ModelPoint:
         若模型点未提供保单年度则默认为发单时刻
         """
         try:
-            return self.gross_premium * concatenate((ones(self.payment_term), zeros(self.policy_term - self.payment_term))).cumsum()[self.index_policy_year:]  # type: ndarray
+            rst: ndarray = self.gross_premium * concatenate((ones(self.payment_term), zeros(self.policy_term - self.payment_term))).cumsum()[self.index_policy_year:]
+            return rst
         except TypeError:
             return concatenate((ones(self.payment_term), zeros(self.policy_term - self.payment_term))).cumsum()[self.index_policy_year:]
 
@@ -253,6 +254,17 @@ class ModelPoint:
 class TimeScale(Enum):
     YEAR = auto()
     MONTH = auto()
+
+    @classmethod
+    def from_str(cls, str):
+        """
+        get obj from string 由于excel难以传入python obj 依靠 此函数 完成 python 与 excel 的桥接
+        
+        :param str: 
+        :return: 
+        """
+        return getattr(cls, str)
+
 
 
 YEAR = TimeScale.YEAR
@@ -298,13 +310,13 @@ class CashFlowType(metaclass=ABCMeta):
         """ 基础的比例 """
 
     @abstractmethod
-    def getCashFlow(self, *, mp: ModelPoint, fromInit: bool=False, forMonth: bool=True) -> ndarray:
+    def getCashFlow(self, *, mp: ModelPoint, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         """
         通过 self.ratio 返回模型点在此责任下的 **不考虑概率、未贴现** 的现金流
         请重载此函数
 
         :param bool forMonth: 是否返回月度现金流 默认 True
-        :param bool fromInit: 是否从发单时刻算起 默认 False
+        :param bool from_init: 是否从发单时刻算起 默认 False
         :param ModelPoint mp: 模型点
         :return:
         """
@@ -314,20 +326,21 @@ class CashFlowType(metaclass=ABCMeta):
 class CashFlowSA(CashFlowType):
     """ 与保额成比例的现金流类型 """
 
-    def getCashFlow(self, *, mp: ModelPoint, fromInit: bool=False, forMonth: bool=True) -> ndarray:
+    def getCashFlow(self, *, mp: ModelPoint, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         """
         根据模型点保额返回 **未考虑概率未贴现** 的现金流
 
-        :param bool forMonth: 是否返回月度现金流 默认 True
-        :param bool fromInit: 是否从发单时刻算起 默认 False
+        :param TimeScale time_scale: 返回月度现金流还是年度现金流 默认 MONTH
+        :param bool from_init: 是否从发单时刻算起 默认 False
         :param ModelPoint mp: 模型点
         :return:
         """
+        forMonth = time_scale is MONTH
         try:
             yearRatio = full(mp.policy_term, self.ratio * mp.sum_assured)
         except TypeError:
             yearRatio = full(mp.policy_term, self.ratio)
-        if fromInit:
+        if from_init:
             return repeat(yearRatio, 12) if forMonth else yearRatio
         else:
             return repeat(yearRatio, 12)[mp.index_policy_month:] if forMonth else yearRatio[mp.index_policy_year:]
@@ -339,15 +352,16 @@ class CashFlowPrem(CashFlowType):
     def __init__(self, ratio: float, **kwargs):
         super().__init__(ratio)
 
-    def getCashFlow(self, *, mp: ModelPoint, fromInit: bool = False, forMonth: bool = True) -> ndarray:
+    def getCashFlow(self, *, mp: ModelPoint, from_init: bool = False, time_scale: TimeScale=MONTH) -> ndarray:
         """
         根据模型点已交保费返回 **未考虑概率未贴现** 的现金流
 
-        :param bool forMonth: 是否返回月度现金流 默认 True
-        :param bool fromInit: 是否从发单时刻算起 默认 False
+        :param TimeScale time_scale: 返回月度现金流还是年度现金流 默认 MONTH
+        :param bool from_init: 是否从发单时刻算起 默认 False
         :param ModelPoint mp: 模型点
         :rtype: ndarray
         """
+        forMonth = time_scale is MONTH
         try:
             paid_prem = mp.gross_premium * concatenate(
                 (ones(mp.payment_term), zeros(mp.policy_term - mp.payment_term))).cumsum()
@@ -355,10 +369,11 @@ class CashFlowPrem(CashFlowType):
             paid_prem = concatenate(
                 (ones(mp.payment_term), zeros(mp.policy_term - mp.payment_term))).cumsum()
         yearRatio = full(mp.policy_term, self.ratio) * paid_prem
-        if fromInit:
+        if from_init:
             return repeat(yearRatio, 12) if forMonth else yearRatio
         else:
             return repeat(yearRatio, 12)[mp.index_policy_month:] if forMonth else yearRatio[mp.index_policy_year:]
+
 
 
 class CashFlowGetterFactory:
@@ -372,23 +387,23 @@ class CashFlowGetterFactory:
     DICT_TYPE = (PAYMENT_TREM, AGE, PAYMENT_TREM_AGE)
     """ 支持的字典存储方式的类型 """
 
-    def __init__(self, dictType: str, *, ratioDict: dict=None, ratioDataFrame: pd.DataFrame=None):
+    def __init__(self, dict_type: str, *, ratio_dict: dict=None, ratio_data_frame: pd.DataFrame=None):
         """
         >>> import openpyxl as pxl
         >>> from io_tools import read_sheet
         >>> wb = pxl.load_workbook("test.xlsx", data_only=True)  # data_only=True force excel formula as there computed values
         >>> ws = wb.active
         >>> df = read_sheet(ws, index_col=[0,1])
-        >>> getCashFlow = CashFlowGetterFactory(CashFlowGetterFactory.PAYMENT_TREM_AGE, ratioDataFrame=df)
+        >>> getCashFlow = CashFlowGetterFactory(CashFlowGetterFactory.PAYMENT_TREM_AGE, ratio_data_frame=df)
         """
-        assert dictType in self.DICT_TYPE
-        assert ratioDict is not None or ratioDataFrame is not None
-        if ratioDict is not None:
-            self.ratioDict = self._forceKeyAsInt_(ratioDict)
+        assert dict_type in self.DICT_TYPE
+        assert ratio_dict is not None or ratio_data_frame is not None
+        if ratio_dict is not None:
+            self.ratioDict = self._forceKeyAsInt_(ratio_dict)
         else:
-            self.ratioDict = self._forceKeyAsInt_(self._genRatioDictFromDataFrame_(df=ratioDataFrame))
+            self.ratioDict = self._forceKeyAsInt_(self._genRatioDictFromDataFrame_(df=ratio_data_frame))
         """ 比例字典 """
-        self.dictType = dictType
+        self.dictType = dict_type
         """ 比例字典存储的方式 """
 
     @classmethod
@@ -414,13 +429,13 @@ class CashFlowGetterFactory:
             couple = [(int(k), cls._forceKeyAsInt_(v)) for k, v in d.items()]
             return dict(couple)
 
-    def __call__(self, mp: ModelPoint, *, fromInit: bool=False, timeScale: TimeScale=MONTH):
+    def __call__(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH):
         """
         根据模型点计算现金流比例
 
         :param ModelPoint mp: 模型点
-        :param bool fromInit: 是否从发单时刻开始
-        :param TimeScale timeScale: 结果的时间尺度
+        :param bool from_init: 是否从发单时刻开始
+        :param TimeScale time_scale: 结果的时间尺度
         :return: 现金流比例
         """
         if self.dictType == self.AGE:
@@ -431,10 +446,10 @@ class CashFlowGetterFactory:
             raw = self.ratioDict[mp.payment_term][mp.age]
         length = len(raw)
         yearRatio = array(raw)[:mp.policy_term] if mp.policy_term <= length else concatenate((raw, full(mp.policy_term - length, raw[-1])))
-        if timeScale is YEAR:
-            return yearRatio if fromInit else yearRatio[mp.index_policy_year]
-        elif timeScale is MONTH:
-            return repeat(yearRatio, 12)[mp.index_policy_month:] if not fromInit else repeat(yearRatio, 12)
+        if time_scale is YEAR:
+            return yearRatio if from_init else yearRatio[mp.index_policy_year]
+        elif time_scale is MONTH:
+            return repeat(yearRatio, 12)[mp.index_policy_month:] if not from_init else repeat(yearRatio, 12)
 
 
 class __CashFlowCatMeta__(ABCMeta):
@@ -463,7 +478,7 @@ class CashFlowCat(metaclass=__CashFlowCatMeta__):
         if hasattr(CashFlowCat, cls.__name__):
             raise ValueError("This Cash Flow Cat Already Exists")
         else:
-            setattr(CashFlowCat, cls.__name__, cls)
+            setattr(CashFlowCat, cls.__name__, cls())
 
     @classmethod
     def __contains__(cls, item):
@@ -495,23 +510,31 @@ class CashFlowCat(metaclass=__CashFlowCatMeta__):
         else:
             raise TypeError("Only CashFlowType.SubLiabilityType is legal")
 
-    def __init__(self, cashFlowType: CashFlowType, *, time=None, getCashFlow: Callable=None, index_in_product: int=None):
+    def __init__(self, cash_flow_type: CashFlowType=None, *, time=None, getCashFlow: Callable=None, index_in_product: int=None):
         """
-        :param CashFlowType cashFlowType:
+        :param CashFlowType cash_flow_type:
         :param float time: 现金发生时点, 范围 为 区间 [0,1]
         :param Callable getCashFlow: 自定义的getCashFlow函数，见CashFlowGetterFactory类
         :param int index_in_product: 在产品中的编号, 默认由 ProductManager 根据定义顺序 初始化
         """
-        assert cashFlowType.ratio is not None or getCashFlow is not None
-        self.type = cashFlowType
+        # assert cash_flow_type.ratio is not None or getCashFlow is not None
+        self.type = cash_flow_type
         """ 现金流基础类型 """
         self.time = time if time is not None else self.DEFAULT_TIME
         """ 现金流产生的时刻 """
         self.index_in_product: Optional[int] = index_in_product
         """ 在产品中的编号"""
+        self.cashFlowGetter = getCashFlow
 
-    def getCashFlow(self, mp: ModelPoint, *, fromInit: bool=False, timeScale: TimeScale=MONTH) -> ndarray:
-        return self.type.getCashFlow(mp=mp, fromInit=fromInit, timeScale=timeScale)
+    def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
+        try:
+            return self.cashFlowGetter(mp=mp, fromInit=from_init, timeScale=time_scale)
+        except TypeError:
+            return self.type.getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale)
+
+    @classmethod
+    def from_str(cls, str):
+        return getattr(cls, str)
 
 
 # 定义CashFlow 为 CashFlowCat 别名
@@ -591,10 +614,11 @@ class ProductManager(type):
             [x for x in range(len(cfs)) if x not in existed_cf_indexes][:len(cfs) - len(existed_cf_indexes)]):
             cf.index_in_product = idx
 
+        namespace["CashFlows"] = cfs
         # init cls
         cls = type.__new__(mcs, name, bases, namespace)
         if name != "ProductBase":
-            mcs.PRODUCTS[name] = cls
+            mcs.PRODUCTS[cls.prod_id] = cls
         setattr(mcs, name, cls)
         return cls
 
@@ -603,12 +627,20 @@ class ProductManager(type):
 
 
 class ProductBase(metaclass=ProductManager):
+
+    CashFlows: List[CashFlow]
+    """ 类成员， 保存了该产品的所有现金流 """
+
     def __get__(self, instance, owner):
         if instance is None and owner is ProductManager:
             return self
 
     def __init__(self, probabilityTables: Iterable[ProbabilityTable]):
         self.probabilityTables = list(probabilityTables)
+
+    @classmethod
+    def getCashFlow(cls, cash_flow_cat: CashFlowCat, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH):
+        return reduce(lambda x, y: x+y, map(lambda c: c.getCashFlow(mp, from_init=from_init, time_scale=time_scale), filter(lambda c: c in cash_flow_cat, cls.CashFlows)))
 
 
 if __name__ == '__main__':
