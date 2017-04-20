@@ -19,7 +19,7 @@ from copy import deepcopy
 from functools import reduce
 import xlwings as xw
 from numpy import ndarray, concatenate, zeros, ones, array, full, repeat
-import pandas as pd 
+import pandas as pd
 
 
 class ModelPoint:
@@ -36,7 +36,7 @@ class ModelPoint:
         >>> mp1 = ModelPoint(0, 10, 30, 5)
         >>> mp2 = ModelPoint(0, 10, '30@', '15')
         >>> mp3 = ModelPoint(0, 10, '@30', '15@', gross_premium=10.0)
-        
+
 
         >>> ModelPoint(0, 10, 30, 5).sex
         0
@@ -259,9 +259,9 @@ class TimeScale(Enum):
     def from_str(cls, str):
         """
         get obj from string 由于excel难以传入python obj 依靠 此函数 完成 python 与 excel 的桥接
-        
-        :param str: 
-        :return: 
+
+        :param str:
+        :return:
         """
         return getattr(cls, str)
 
@@ -272,7 +272,15 @@ MONTH = TimeScale.MONTH
 
 
 class CashFlowType(metaclass=ABCMeta):
-    """  现金流类型 """
+    """ 
+     现金流计算方式类型.
+     在绝大部分情形下，现金流是某个保单属性的比例，如已交保费、保额等，每一种计算方式类型对应了一个CashFlowType的子类，
+     在建立一个具体的现金流时，需通过选择合适的 CashFlowType 的子类来 确定 该现金流是哪个保单属性的比例。通过提供 ratio 来 给出 一个具体的一致的比例值。
+     CashFlowType 的 getCashFlow 通过 ratio 计算出 具体的 现金流
+     
+     >>> cf = DeathBenefit(CashFlowSA(ratio=0.1))
+     
+    """
 
     DEFAULT_TIME = None
 
@@ -309,37 +317,45 @@ class CashFlowType(metaclass=ABCMeta):
         self.ratio = ratio
         """ 基础的比例 """
 
-    @abstractmethod
-    def getCashFlow(self, *, mp: ModelPoint, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
+
+    def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         """
         通过 self.ratio 返回模型点在此责任下的 **不考虑概率、未贴现** 的现金流
-        请重载此函数
-
+        
+        :param ModelPoint mp: 模型点
         :param bool forMonth: 是否返回月度现金流 默认 True
         :param bool from_init: 是否从发单时刻算起 默认 False
+        :rtype: ndarray
+        """
+        return self.getCashFlowBase(mp=mp, from_init=from_init, time_scale=time_scale)  * self.ratio
+
+    @abstractmethod
+    def getCashFlowBase(self, *, mp: ModelPoint, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
+        """
+        cashflow = ratio * cash_flow_base 此函数计算 cash_flow_base 根据不同的 CashFlowType 请重载此函数
+        
         :param ModelPoint mp: 模型点
-        :return:
+        :param bool forMonth: 是否返回月度现金流 默认 True
+        :param bool from_init: 是否从发单时刻算起 默认 False
+        :rtype: ndarray
         """
         pass
-
 
 class CashFlowSA(CashFlowType):
     """ 与保额成比例的现金流类型 """
 
-    def getCashFlow(self, *, mp: ModelPoint, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
+    def getCashFlowBase(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         """
-        根据模型点保额返回 **未考虑概率未贴现** 的现金流
-
+        :param ModelPoint mp: 模型点
         :param TimeScale time_scale: 返回月度现金流还是年度现金流 默认 MONTH
         :param bool from_init: 是否从发单时刻算起 默认 False
-        :param ModelPoint mp: 模型点
-        :return:
+        :rtype: ndarray
         """
         forMonth = time_scale is MONTH
         try:
-            yearRatio = full(mp.policy_term, self.ratio * mp.sum_assured)
+            yearRatio = full(mp.policy_term, mp.sum_assured)
         except TypeError:
-            yearRatio = full(mp.policy_term, self.ratio)
+            yearRatio = ones(mp.policy_term)
         if from_init:
             return repeat(yearRatio, 12) if forMonth else yearRatio
         else:
@@ -352,13 +368,11 @@ class CashFlowPrem(CashFlowType):
     def __init__(self, ratio: float, **kwargs):
         super().__init__(ratio)
 
-    def getCashFlow(self, *, mp: ModelPoint, from_init: bool = False, time_scale: TimeScale=MONTH) -> ndarray:
+    def getCashFlowBase(self, mp: ModelPoint, *, from_init: bool = False, time_scale: TimeScale=MONTH) -> ndarray:
         """
-        根据模型点已交保费返回 **未考虑概率未贴现** 的现金流
-
+        :param ModelPoint mp: 模型点
         :param TimeScale time_scale: 返回月度现金流还是年度现金流 默认 MONTH
         :param bool from_init: 是否从发单时刻算起 默认 False
-        :param ModelPoint mp: 模型点
         :rtype: ndarray
         """
         forMonth = time_scale is MONTH
@@ -368,12 +382,10 @@ class CashFlowPrem(CashFlowType):
         except TypeError:
             paid_prem = concatenate(
                 (ones(mp.payment_term), zeros(mp.policy_term - mp.payment_term))).cumsum()
-        yearRatio = full(mp.policy_term, self.ratio) * paid_prem
         if from_init:
-            return repeat(yearRatio, 12) if forMonth else yearRatio
+            return repeat(paid_prem, 12) if forMonth else paid_prem
         else:
-            return repeat(yearRatio, 12)[mp.index_policy_month:] if forMonth else yearRatio[mp.index_policy_year:]
-
+            return repeat(paid_prem, 12)[mp.index_policy_month:] if forMonth else paid_prem[mp.index_policy_year:]
 
 
 class CashFlowGetterFactory:
@@ -528,7 +540,7 @@ class CashFlowCat(metaclass=__CashFlowCatMeta__):
 
     def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         try:
-            return self.cashFlowGetter(mp=mp, fromInit=from_init, timeScale=time_scale)
+            return self.cashFlowGetter(mp=mp, fromInit=from_init, timeScale=time_scale) * self.type.getCashFlowBase(mp=mp, fromInit=from_init, timeScale=time_scale)
         except TypeError:
             return self.type.getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale)
 
@@ -590,8 +602,68 @@ class OtherIllnessBenefit(IllnessBenefit):
     pass
 
 
+class LapseCashFlow(CashFlow):
+    """
+    退保现金流
+    """
+    DEFAULT_TIME = 0.5
+    def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
+        # TODO: return cv array of the model point  
+        pass
+
+
 class ProbabilityTable:
-    pass
+    """
+    概率表
+    """
+    AGE = "AGE"
+    POL_YR = "POL_YR"
+
+    def __init__(self, array: ndarray, cat: CashFlowCat, type=None):
+        assert 2 in array.shape
+        self.values = array if array.shape[0] == 2 else array.T
+        self.cat = cat
+        self.type = self.AGE if type is None else type
+
+    def __getitem__(self, item):
+        return self.values[item]
+
+    def __call__(self, mp: ModelPoint, from_init: bool=False, time_scale: TimeScale=MONTH, tuner: Callable[[ndarray], ndarray]=None):
+
+        if self.type == self.AGE:
+            probs = self[mp.sex, mp.age: mp.age+mp.policy_term] 
+        elif self.type == self.POL_YR:
+            probs = self[mp.sex, mp.index_policy_year: mp.index_policy_year+mp.policy_term] 
+        else:
+            raise TypeError
+
+        try:
+            probs = tuner(probs)
+        except TypeError:
+            pass
+
+        if time_scale is MONTH:
+            probs = repeat(probs, 12)
+        elif time_scale is YEAR:
+            pass
+        else:
+            raise ValueError(f"{time_scale}")
+
+        if from_init:
+            return probs[mp.index_policy_year:] if time_scale is YEAR else probs[mp.index_policy_month:]
+        else:
+            return probs
+
+
+class ProbabilityPac:
+
+    def __init__(self, *args, prob_pac_index):
+        self.probabilityTables: List[ProbabilityTable] = args
+        self.prob_pac_index = prob_pac_index
+
+    def __call__(self, mp: ModelPoint, from_init: bool=False, time_scale=MONTH):
+        # TODO: How to integrate TUNER ?
+        pass
 
 
 class ProductManager(type):
@@ -610,8 +682,7 @@ class ProductManager(type):
         cfs: List[CashFlow] = [x for x in namespace.values() if isinstance(x, CashFlow)]
         existed_cf_indexes = [x.index_in_product for x in cfs if x.index_in_product is not None]
         assert len(existed_cf_indexes) == len(set(existed_cf_indexes))
-        for cf, idx in zip(filter(lambda x: x.index_in_product is None, cfs), 
-            [x for x in range(len(cfs)) if x not in existed_cf_indexes][:len(cfs) - len(existed_cf_indexes)]):
+        for cf, idx in zip(filter(lambda x: x.index_in_product is None, cfs), [x for x in range(len(cfs)) if x not in existed_cf_indexes][:len(cfs) - len(existed_cf_indexes)]):
             cf.index_in_product = idx
 
         namespace["CashFlows"] = cfs
@@ -640,7 +711,7 @@ class ProductBase(metaclass=ProductManager):
 
     @classmethod
     def getCashFlow(cls, cash_flow_cat: CashFlowCat, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH):
-        return reduce(lambda x, y: x+y, map(lambda c: c.getCashFlow(mp, from_init=from_init, time_scale=time_scale), filter(lambda c: c in cash_flow_cat, cls.CashFlows)))
+        return reduce(lambda x, y: x + y, map(lambda c: c.getCashFlow(mp, from_init=from_init, time_scale=time_scale), filter(lambda c: c in cash_flow_cat, cls.CashFlows)))
 
 
 if __name__ == '__main__':

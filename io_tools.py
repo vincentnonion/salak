@@ -1,8 +1,7 @@
 """
-Module for io
+Module for Input Output
 """
 
-import xlwings as xw
 import openpyxl as pxl
 from openpyxl.worksheet.worksheet import Worksheet
 import pandas as pd
@@ -42,3 +41,9 @@ if __name__ == "__main__":
     df = read_sheet(ws, index_col=0)
     print(df)
     print(df.values)
+
+    wb = pxl.load_workbook("data/ProbabilityTables.xlsx", data_only=True)
+    ws = wb.get_sheet_by_name("CL13_2")
+    df = read_sheet(ws, index_col=0)
+    print(df.iloc[1:23,0])
+    # print(df.values)

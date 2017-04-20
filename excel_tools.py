@@ -60,7 +60,7 @@ def pCumsum(x, bottomUp=True):
 @xw.arg('x', np.array, ndim=2)
 @xw.arg('bottomUp', doc="if TRUE then cumprod from bottom default True")
 @xw.ret(ndim=2)
-def pCumprod(x, bottomUp=True):
+def pCumprod(x, bottomUp=False):
     """ cumprod a vertical array """
     return x[::-1,:].cumprod(axis=0)[::-1,:] if bottomUp else x.cumprod(axis=0)
 
