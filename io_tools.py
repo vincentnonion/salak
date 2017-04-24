@@ -36,6 +36,7 @@ def read_sheet(sheet: Worksheet, *, header=True, index_col: Union[int, Iterable]
 
 
 if __name__ == "__main__":
+    from actuarial_tools import *
     wb = pxl.load_workbook("test.xlsx", data_only=True)
     ws = wb.active
     df = read_sheet(ws, index_col=0)
@@ -45,5 +46,8 @@ if __name__ == "__main__":
     wb = pxl.load_workbook("data/ProbabilityTables.xlsx", data_only=True)
     ws = wb.get_sheet_by_name("CL13_2")
     df = read_sheet(ws, index_col=0)
-    print(df.iloc[1:23,0])
+    # print(df.iloc[1:23,0])
     # print(df.values)
+    pt = ProbabilityTable.from_dataframe(df, cat=DeathBenefit)
+    mp = ModelPoint(sex=0, age=10, policy_term=10, payment_term=5, policy_year=2)
+    print(pt(mp, time_scale=YEAR))

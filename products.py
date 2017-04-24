@@ -1,18 +1,17 @@
 from actuarial_tools import *
+import prlife
 
 
-class ProductA(ProductBase, prod_id=1, prod_name="test_product"):
-    db1 = DeathBenefit(CashFlowSA(ratio=1.0))
-    db2 = DeathBenefit(CashFlowPrem(ratio=1.0))
+
+CREATE_PRODUCTS_FROM_DB = True
 
 
-class ProductB(ProductBase):
-    prod_id = 2
-    prod_name = "test_product1"
-    db1 = DeathBenefit(CashFlowSA(ratio=1.0))
-    db2 = DeathBenefit(CashFlowPrem(ratio=1.0))
-
+if CREATE_PRODUCTS_FROM_DB:
+	# create products from data base
+	prlife.create_products()
 
 
 # mp = ModelPoint(0, 10, 10, 5, gross_premium=3.33, sum_assured=1000)
 # print(ProductA.getCashFlow(DeathBenefit, mp, time_scale=YEAR))
+
+# print(ProductManager.PRODUCTS)

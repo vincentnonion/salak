@@ -16,6 +16,7 @@ from datetime import date
 from enum import Flag, auto, Enum
 from typing import *
 from copy import deepcopy
+from collections import OrderedDict
 from functools import reduce
 import xlwings as xw
 from numpy import ndarray, concatenate, zeros, ones, array, full, repeat
@@ -266,20 +267,19 @@ class TimeScale(Enum):
         return getattr(cls, str)
 
 
-
 YEAR = TimeScale.YEAR
 MONTH = TimeScale.MONTH
 
 
 class CashFlowType(metaclass=ABCMeta):
-    """ 
+    """
      现金流计算方式类型.
      在绝大部分情形下，现金流是某个保单属性的比例，如已交保费、保额等，每一种计算方式类型对应了一个CashFlowType的子类，
      在建立一个具体的现金流时，需通过选择合适的 CashFlowType 的子类来 确定 该现金流是哪个保单属性的比例。通过提供 ratio 来 给出 一个具体的一致的比例值。
      CashFlowType 的 getCashFlow 通过 ratio 计算出 具体的 现金流
-     
+
      >>> cf = DeathBenefit(CashFlowSA(ratio=0.1))
-     
+
     """
 
     DEFAULT_TIME = None
@@ -317,29 +317,29 @@ class CashFlowType(metaclass=ABCMeta):
         self.ratio = ratio
         """ 基础的比例 """
 
-
     def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         """
         通过 self.ratio 返回模型点在此责任下的 **不考虑概率、未贴现** 的现金流
-        
+
         :param ModelPoint mp: 模型点
         :param bool forMonth: 是否返回月度现金流 默认 True
         :param bool from_init: 是否从发单时刻算起 默认 False
         :rtype: ndarray
         """
-        return self.getCashFlowBase(mp=mp, from_init=from_init, time_scale=time_scale)  * self.ratio
+        return self.getCashFlowBase(mp=mp, from_init=from_init, time_scale=time_scale) * self.ratio
 
     @abstractmethod
     def getCashFlowBase(self, *, mp: ModelPoint, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         """
         cashflow = ratio * cash_flow_base 此函数计算 cash_flow_base 根据不同的 CashFlowType 请重载此函数
-        
+
         :param ModelPoint mp: 模型点
         :param bool forMonth: 是否返回月度现金流 默认 True
         :param bool from_init: 是否从发单时刻算起 默认 False
         :rtype: ndarray
         """
         pass
+
 
 class CashFlowSA(CashFlowType):
     """ 与保额成比例的现金流类型 """
@@ -607,8 +607,9 @@ class LapseCashFlow(CashFlow):
     退保现金流
     """
     DEFAULT_TIME = 0.5
+
     def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
-        # TODO: return cv array of the model point  
+        # TODO: return cv array of the model point
         pass
 
 
@@ -621,9 +622,25 @@ class ProbabilityTable:
 
     def __init__(self, array: ndarray, cat: CashFlowCat, type=None):
         assert 2 in array.shape
+        assert type is None or type in (self.AGE, self.POL_YR)
         self.values = array if array.shape[0] == 2 else array.T
         self.cat = cat
         self.type = self.AGE if type is None else type
+
+    @classmethod
+    def from_dataframe(cls, df: pd.DataFrame, *, cat: CashFlowCat, type=AGE):
+        """
+        Create a ProbabilityTable from dataframe
+
+        >>> wb = pxl.load_workbook("data/ProbabilityTables.xlsx", data_only=True)
+        >>> ws = wb.get_sheet_by_name("CL13_2")
+        >>> df = read_sheet(ws, index_col=0)
+        >>> pt = ProbabilityTable.from_dataframe(df,cat=DeathBenefit)
+        """
+
+        array = df.values
+        type = df.index.name.upper() if type is None else type
+        return ProbabilityTable(array=array, cat=cat, type=type)
 
     def __getitem__(self, item):
         return self.values[item]
@@ -631,12 +648,12 @@ class ProbabilityTable:
     def __call__(self, mp: ModelPoint, from_init: bool=False, time_scale: TimeScale=MONTH, tuner: Callable[[ndarray], ndarray]=None):
 
         if self.type == self.AGE:
-            probs = self[mp.sex, mp.age: mp.age+mp.policy_term] 
+            probs = self[mp.sex, mp.age: mp.age + mp.policy_term]
         elif self.type == self.POL_YR:
-            probs = self[mp.sex, mp.index_policy_year: mp.index_policy_year+mp.policy_term] 
+            probs = self[mp.sex, mp.index_policy_year: mp.index_policy_year + mp.policy_term]
         else:
             raise TypeError
-
+        # use the tuner to tune the probability
         try:
             probs = tuner(probs)
         except TypeError:
@@ -661,9 +678,49 @@ class ProbabilityPac:
         self.probabilityTables: List[ProbabilityTable] = args
         self.prob_pac_index = prob_pac_index
 
-    def __call__(self, mp: ModelPoint, from_init: bool=False, time_scale=MONTH):
+    def getProbability(self, cat):
+        return filter(lambda x: x.cat in cat, self.probabilityTables)
+
+    @property
+    def death_probability_table(self) -> ProbabilityTable:
+        return next(self.getProbability(DeathBenefit))
+
+    @property
+    def critical_illness_probability_table(self) -> ProbabilityTable:
+        try:
+            return next(self.getProbability(IllnessBenefit))
+        except StopIteration:
+            return None
+
+    @property
+    def accident_probability_table(self) -> Iterable[ProbabilityTable]:
+        return self.getProbability(AccidentBenefit)
+
+    def __call__(self, mp: ModelPoint, from_init: bool=False, time_scale=MONTH, tunners: Dict[CashFlow, Callable]=None) -> OrderedDict:
         # TODO: How to integrate TUNER ?
         pass
+
+    @staticmethod
+    def inForce(death_rate: ndarray, *, ci_rate: ndarray=None, ci_k: ndarray=None, lapse: ndarray=None, killAllAtEnd: bool=True)->ndarray:
+        """
+        计算Inforce at end of each period
+
+        :param death_rate: 调整后的死亡率
+        :param ci_rate: 调整后的疾病发生率
+        :param ci_k: 调整后的疾病致死占比
+        :param lapse: 调整后的退保率
+        """
+        if ci_k is not None:
+            death_rate = death_rate * (1 - ci_k)
+        if killAllAtEnd and ci_rate is not None:
+            death_rate[-1] = 1 - ci_rate[-1]
+        survival_rate = 1 - death_rate
+        if ci_rate is not None:
+            survival_rate -= ci_rate
+        if lapse is not None:
+            survival_rate *= (1 - lapse)
+        if_eop = survival_rate.cumprod()
+        return if_eop
 
 
 class ProductManager(type):
@@ -706,8 +763,8 @@ class ProductBase(metaclass=ProductManager):
         if instance is None and owner is ProductManager:
             return self
 
-    def __init__(self, probabilityTables: Iterable[ProbabilityTable]):
-        self.probabilityTables = list(probabilityTables)
+    # def __init__(self, probabilityTables: Iterable[ProbabilityTable]):
+    #     self.probabilityTables = list(probabilityTables)
 
     @classmethod
     def getCashFlow(cls, cash_flow_cat: CashFlowCat, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH):
