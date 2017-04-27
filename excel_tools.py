@@ -72,6 +72,7 @@ def modelPoint(keywords, values) -> ModelPoint:
     # ModelPoint(sex=0, age=10)
     return ModelPoint(**dict(zip(keywords, values)))
 
+
 @xw.func
 @xw.arg('prodId',doc="the id of the Product")
 @xw.arg('methodName', doc="the method name of the py function")
@@ -90,6 +91,11 @@ def productArrayOf(prodId, methodName, mp_keywords, mp_values, keywords=None, va
     x=f(**kwarg, mp=mp)
     return x if not vertical else x.reshape((x.shape[0],1))
 
+
+@xw.func
+@xw.arg('prodId',doc="the id of the Product")
+def productName(prodId)->str:
+    return ProductManager.PRODUCTS[prodId].prod_name
 
 
 if __name__ == "__main__":

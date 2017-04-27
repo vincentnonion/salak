@@ -365,9 +365,6 @@ class CashFlowSA(CashFlowType):
 class CashFlowPrem(CashFlowType):
     """ 与 **已交保费** 成比例的现金流类型 """
 
-    def __init__(self, ratio: float, **kwargs):
-        super().__init__(ratio)
-
     def getCashFlowBase(self, mp: ModelPoint, *, from_init: bool = False, time_scale: TimeScale=MONTH) -> ndarray:
         """
         :param ModelPoint mp: 模型点
@@ -459,7 +456,7 @@ class CashFlowGetterFactory:
         length = len(raw)
         yearRatio = array(raw)[:mp.policy_term] if mp.policy_term <= length else concatenate((raw, full(mp.policy_term - length, raw[-1])))
         if time_scale is YEAR:
-            return yearRatio if from_init else yearRatio[mp.index_policy_year]
+            return yearRatio if from_init else yearRatio[mp.index_policy_year:]
         elif time_scale is MONTH:
             return repeat(yearRatio, 12)[mp.index_policy_month:] if not from_init else repeat(yearRatio, 12)
 
@@ -490,7 +487,7 @@ class CashFlowCat(metaclass=__CashFlowCatMeta__):
         if hasattr(CashFlowCat, cls.__name__):
             raise ValueError("This Cash Flow Cat Already Exists")
         else:
-            setattr(CashFlowCat, cls.__name__, cls())
+            setattr(CashFlowCat, cls.__name__, cls)
 
     @classmethod
     def __contains__(cls, item):
@@ -540,7 +537,7 @@ class CashFlowCat(metaclass=__CashFlowCatMeta__):
 
     def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         try:
-            return self.cashFlowGetter(mp=mp, fromInit=from_init, timeScale=time_scale) * self.type.getCashFlowBase(mp=mp, fromInit=from_init, timeScale=time_scale)
+            return self.cashFlowGetter(mp=mp, from_init=from_init, time_scale=time_scale) * self.type.getCashFlowBase(mp=mp, from_init=from_init, time_scale=time_scale)
         except TypeError:
             return self.type.getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale)
 
@@ -573,6 +570,13 @@ class SurvivalBenefit(Benefit):
     """
     DEFAULT_TIME = 1.0
 
+
+class MaturityBenefit(SurvivalBenefit):
+
+    def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH):
+        rst = super().getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale)
+        rst[:-1] = 0
+        return rst
 
 class AccidentBenefit(Benefit):
     """
@@ -619,16 +623,20 @@ class ProbabilityTable:
     """
     AGE = "AGE"
     POL_YR = "POL_YR"
+    TABLES = []
 
-    def __init__(self, array: ndarray, cat: CashFlowCat, type=None):
-        assert 2 in array.shape
+    def __init__(self, array: ndarray, cat: CashFlowCat, type=None, table_name=None):
+        # assert 2 in array.shape
         assert type is None or type in (self.AGE, self.POL_YR)
-        self.values = array if array.shape[0] == 2 else array.T
+        self.values = array if array.shape[0] < array.shape[1] else array.T
         self.cat = cat
         self.type = self.AGE if type is None else type
+        self.table_name = table_name
+        self.TABLES.append(self)
+        self.table_index = len(self.TABLES)
 
     @classmethod
-    def from_dataframe(cls, df: pd.DataFrame, *, cat: CashFlowCat, type=AGE):
+    def from_dataframe(cls, df: pd.DataFrame, *, cat: CashFlowCat, type=AGE, table_name=None):
         """
         Create a ProbabilityTable from dataframe
 
@@ -640,7 +648,7 @@ class ProbabilityTable:
 
         array = df.values
         type = df.index.name.upper() if type is None else type
-        return ProbabilityTable(array=array, cat=cat, type=type)
+        return ProbabilityTable(array=array, cat=cat, type=type, table_name=table_name)
 
     def __getitem__(self, item):
         return self.values[item]

@@ -49,5 +49,5 @@ if __name__ == "__main__":
     # print(df.iloc[1:23,0])
     # print(df.values)
     pt = ProbabilityTable.from_dataframe(df, cat=DeathBenefit)
-    mp = ModelPoint(sex=0, age=10, policy_term=10, payment_term=5, policy_year=2)
+    mp = ModelPoint(sex=0, age=10, policy_term=10, payment_term=5, policy_year=2, sum_assured=5000, gross_premium=1000)
     print(pt(mp, time_scale=YEAR))

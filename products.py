@@ -1,10 +1,7 @@
 from actuarial_tools import *
 import prlife
 
-
-
 CREATE_PRODUCTS_FROM_DB = True
-
 
 if CREATE_PRODUCTS_FROM_DB:
 	# create products from data base
