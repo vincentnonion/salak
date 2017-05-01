@@ -26,6 +26,43 @@ import pandas as pd
 class ModelPoint:
     """
         ModelPoint Class, represent a model point
+
+        非空成员:
+            - sex
+            - age
+            - policy_term
+            - payment_term
+
+        可选成员:
+            - policy_year
+            - policy_month
+
+        用于index的计算成员:
+            - index_policy_year
+            - index_policy_month
+
+        其它计算成员:
+            - age_now
+
+        特殊成员:
+            - gross_premium
+            - sum_assured
+
+        重载操作符:
+            - []
+
+        特殊成员储存在 受保护的成员 *_data_pack* 中，*_data_pack* 本身是一个dict，模型点可以通过[]来访问它的 *_data_pack*、
+        添加新的特殊成员
+        
+        >>> mp = ModelPoint(0, 10, 30, 5)
+        >>> mp['gross_premium'] = 1000.0
+        >>> mp.gross_premium
+        1000.0
+        >>> mp['cv'] = 0
+        >>> mp.cv 
+        0
+        >>> del mp.cv
+
     """
 
     def __init__(self, sex: int, age: int, policy_term: Union[str, int], payment_term: Union[str, int], policy_year: Optional[int]=None, policy_month: Optional[int]=None, **kwargs):  # **kwargs 表示可变长度参数 key word arguments
@@ -78,6 +115,28 @@ class ModelPoint:
         """ 保单月度  """
         self._data_pack: Dict[str, Any] = kwargs
         """ 记录计算结果的地方 """
+
+    def __getitem__(self, item):
+        return self._data_pack[item]
+
+    def __setitem__(self, key, value):
+        self._data_pack[key] = value
+
+    def __delitem__(self, key):
+        if key in self._data_pack:
+            del self._data_pack[key]
+
+    def __getattribute__(self, name):
+        try:
+            return super().__getattribute__(name)
+        except AttributeError as e:
+            return self[name]
+
+    def __delattr__(self, item):
+        try:
+            super().__delattr__(item)
+        except AttributeError:
+            del self[item]
 
     @staticmethod
     def convert_term(term: Union[str, int], age: Optional[int]=None) -> int:
