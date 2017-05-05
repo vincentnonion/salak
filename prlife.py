@@ -95,16 +95,30 @@ def gen_sb_get_cashflow(prophet_id: str, session=SESSION):
     return CashFlowGetterFactory(dict_type=dtype, ratio_dict=normalize(d))
     
 
-def create_products(session=SESSION):
-    # nonlocal ProductManager
-    # nonlocal ProductBase
-    # nonlocal DeathBenefit
-    # nonlocal CriticalIllnessBenefit
-    # nonlocal AccidentBenefit
-    # nonlocal CashFlowSA
-    # nonlocal CashFlowPrem
-
-    for r in session.query(ProphetID).filter(ProphetID.plan_id<30000000).all():
+def create_products(session=SESSION, plan_id_list=None):
+    if plan_id_list is None:
+        plan_id_list = (
+            10112001,
+            10113001,
+            10122001,
+            10123001,
+            10313001,
+            # 10313002,
+            # 10411001,
+            # 10411004,
+            # 10412001,
+            10413001,
+            10513002,
+            10513003,
+            10522001,
+            10523001,
+            20213001,
+            20311001,
+            20312001,
+            20313001,
+            20313002,
+        )
+    for r in (x for x in session.query(ProphetID).filter(ProphetID.plan_id<30000000).all() if x in plan_id_list):
         plan_id, prophet_id = r.plan_id, r.prophet_id
         plan_name = get_plan_name(plan_id)
         parameter = get_non_ul_prarameter(prophet_id=prophet_id)

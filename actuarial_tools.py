@@ -19,7 +19,8 @@ from copy import deepcopy
 from collections import OrderedDict
 from functools import reduce
 import xlwings as xw
-from numpy import ndarray, concatenate, zeros, ones, array, full, repeat
+import numpy as np
+from numpy import ndarray, concatenate, zeros, ones, array, full, repeat, arange
 import pandas as pd
 
 
@@ -53,13 +54,13 @@ class ModelPoint:
 
         特殊成员储存在 受保护的成员 *_data_pack* 中，*_data_pack* 本身是一个dict，模型点可以通过[]来访问它的 *_data_pack*、
         添加新的特殊成员
-        
+
         >>> mp = ModelPoint(0, 10, 30, 5)
         >>> mp['gross_premium'] = 1000.0
         >>> mp.gross_premium
         1000.0
         >>> mp['cv'] = 0
-        >>> mp.cv 
+        >>> mp.cv
         0
         >>> del mp.cv
 
@@ -444,6 +445,37 @@ class CashFlowPrem(CashFlowType):
             return repeat(paid_prem, 12)[mp.index_policy_month:] if forMonth else paid_prem[mp.index_policy_year:]
 
 
+# TODO
+class CashFlowAV(CashFlowType):
+
+    def __init__(self, ratio=None, *, av_predictor: Union[float, Callable]=None):
+        super().__init__(ratio=ratio)
+        pass
+
+    def getCashFlowBase(self, mp: ModelPoint, *, from_init: bool = False, time_scale: TimeScale=MONTH) -> ndarray:
+        """
+        :param ModelPoint mp: 模型点
+        :param TimeScale time_scale: 返回月度现金流还是年度现金流 默认 MONTH
+        :param bool from_init: 是否从发单时刻算起 默认 False
+        :rtype: ndarray
+        """
+        pass
+
+
+# TODO
+class CashFlowMaxPremCV(CashFlowType):
+    """ 与 **已交保费和现金价值较大者** 成比例的现金流类型 """
+
+    def getCashFlowBase(self, mp: ModelPoint, *, from_init: bool = False, time_scale: TimeScale=MONTH) -> ndarray:
+        """
+        :param ModelPoint mp: 模型点
+        :param TimeScale time_scale: 返回月度现金流还是年度现金流 默认 MONTH
+        :param bool from_init: 是否从发单时刻算起 默认 False
+        :rtype: ndarray
+        """
+        pass
+
+
 class CashFlowGetterFactory:
     """
     用来生产 满足条件的 getCashFlow 函数 的帮助类
@@ -519,6 +551,44 @@ class CashFlowGetterFactory:
         elif time_scale is MONTH:
             return repeat(yearRatio, 12)[mp.index_policy_month:] if not from_init else repeat(yearRatio, 12)
 
+    @staticmethod
+    def waiverCashFlowGetter(discount_rate: float, *, ratio: float=1.0) -> Callable:
+        """
+        返回一个用于豁免等现金流计算函数
+
+        >>> class 附加豁免定寿(ProductBase, prod_id=10113001):
+        ...     prod_name = "珠江附加豁免保费定期寿险"
+        ...     db = DeathBenefit(CashFlowSA(), getCashFlow=CashFlowGetterFactory.waiverCashFlowGetter(discount_rate=0.025))
+
+        :param float discount_rate: 主险预定利率
+        :param float ratio: 见 CashFlowType.ratio
+        :rtype: Callable
+        """
+        assert discount_rate < 1
+
+        def f(mp: ModelPoint, *, from_init: bool = False, time_scale: TimeScale = MONTH):
+            year_ratio: ndarray = (1 - 1 / (1 + discount_rate) ** arange(mp.policy_term, 0, -1)) / discount_rate * (1 + discount_rate) * ratio
+            if time_scale is TimeScale.MONTH:
+                return repeat(year_ratio, 12) if from_init else repeat(year_ratio, 12)[mp.index_policy_month:]
+            elif time_scale is TimeScale.YEAR:
+                return year_ratio if from_init else year_ratio[mp.index_policy_year:]
+        return f
+
+    @staticmethod
+    def arithmeticDescendingCashFlowGetter(ratio: float=1.0) -> Callable:
+        """
+        返回一个用于等差减少现金流计算函数
+
+        :param float ratio: 见 CashFlowType.ratio
+        :rtype: Callable
+        """
+        def f(mp: ModelPoint, *, from_init: bool = False, time_scale: TimeScale = MONTH):
+            year_ratio = arange(mp.policy_term, 0, -1) * ratio
+            if time_scale is TimeScale.MONTH:
+                return repeat(year_ratio, 12) if from_init else repeat(year_ratio, 12)[mp.index_policy_month:]
+            elif time_scale is TimeScale.YEAR:
+                return year_ratio if from_init else year_ratio[mp.index_policy_year:]
+
 
 class __CashFlowCatMeta__(ABCMeta):
 
@@ -578,11 +648,12 @@ class CashFlowCat(metaclass=__CashFlowCatMeta__):
         else:
             raise TypeError("Only CashFlowType.SubLiabilityType is legal")
 
-    def __init__(self, cash_flow_type: CashFlowType=None, *, time=None, getCashFlow: Callable=None, index_in_product: int=None):
+    def __init__(self, cash_flow_type: CashFlowType=None, *, time=None, getCashFlow: Callable=None, index_in_product: int=None, restrict_month: int=None):
         """
         :param CashFlowType cash_flow_type:
         :param float time: 现金发生时点, 范围 为 区间 [0,1]
         :param Callable getCashFlow: 自定义的getCashFlow函数，见CashFlowGetterFactory类
+        :param int restrict_month: 限制现金流非零的时间, 正数则开始数月非零, 负数则结尾数月非0
         :param int index_in_product: 在产品中的编号, 默认由 ProductManager 根据定义顺序 初始化
         """
         # assert cash_flow_type.ratio is not None or getCashFlow is not None
@@ -592,13 +663,34 @@ class CashFlowCat(metaclass=__CashFlowCatMeta__):
         """ 现金流产生的时刻 """
         self.index_in_product: Optional[int] = index_in_product
         """ 在产品中的编号"""
+        self.restrict_month: Optional[int] = restrict_month
+        """ 限制现金流非零的时间 """
         self.cashFlowGetter = getCashFlow
 
     def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         try:
-            return self.cashFlowGetter(mp=mp, from_init=from_init, time_scale=time_scale) * self.type.getCashFlowBase(mp=mp, from_init=from_init, time_scale=time_scale)
+            rst = self.cashFlowGetter(mp=mp, from_init=from_init, time_scale=time_scale) * self.type.getCashFlowBase(mp=mp, from_init=from_init, time_scale=time_scale)
         except TypeError:
-            return self.type.getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale)
+            rst = self.type.getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale)
+        if self.restrict_month is None:
+            return rst
+        else:
+            return rst * self._restrict_mask(mp=mp, from_init=from_init, time_scale=time_scale)
+
+    # fixme for 康佑
+    def _restrict_mask(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> Union[ndarray, int]:
+        """ 实现 限制现金流非零的时间 这一功能"""
+        month_ratio = zeros(mp.policy_term * 12)
+        if self.restrict_month > 0:
+            month_ratio[:self.restrict_month] = 1
+        else:
+            month_ratio[self.restrict_month:] = 1
+        if time_scale is MONTH:
+            return month_ratio if from_init else month_ratio[mp.index_policy_month:]
+        elif time_scale is YEAR:
+            return 1
+        else:
+            raise ValueError(f"time_scale={time_scale}")
 
     @classmethod
     def from_str(cls, str):
@@ -629,6 +721,14 @@ class SurvivalBenefit(Benefit):
     """
     DEFAULT_TIME = 1.0
 
+    def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH):
+        if time_scale is YEAR:
+            return super().getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale)
+        elif time_scale is MONTH:
+            mask = zeros(mp.policy_term * 12)
+            mask[arange(mp.policy_term) * 12] = 1
+            return super().getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale) * mask if from_init else super().getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale) * mask[mp.index_policy_month:]
+
 
 class MaturityBenefit(SurvivalBenefit):
 
@@ -636,6 +736,7 @@ class MaturityBenefit(SurvivalBenefit):
         rst = super().getCashFlow(mp=mp, from_init=from_init, time_scale=time_scale)
         rst[:-1] = 0
         return rst
+
 
 class AccidentBenefit(Benefit):
     """
@@ -674,6 +775,79 @@ class LapseCashFlow(CashFlow):
     def getCashFlow(self, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH) -> ndarray:
         # TODO: return cv array of the model point
         pass
+
+
+class ProductManager(type):
+
+    PRODUCTS = {}
+
+    def __new__(mcs, name, bases, namespace, *args, prod_id=None, prod_name=None, **kwargs):
+        if name in mcs.PRODUCTS:
+            raise ValueError(f"Product {name} already exists")
+        if prod_id is not None:
+            namespace['prod_id'] = prod_id
+        if prod_name is not None:
+            namespace['prod_name'] = prod_name
+
+        # init CashFlow's attribute ``index_in_product``
+        cfs: List[CashFlow] = [x for x in namespace.values() if isinstance(x, CashFlow)]
+        existed_cf_indexes = [x.index_in_product for x in cfs if x.index_in_product is not None]
+        assert len(existed_cf_indexes) == len(set(existed_cf_indexes))
+        for cf, idx in zip(filter(lambda x: x.index_in_product is None, cfs), [x for x in range(len(cfs)) if x not in existed_cf_indexes][:len(cfs) - len(existed_cf_indexes)]):
+            cf.index_in_product = idx
+
+        namespace["CashFlows"] = cfs
+        # init cls
+        cls = type.__new__(mcs, name, bases, namespace)
+        if name != "ProductBase":
+            mcs.PRODUCTS[cls.prod_id] = cls
+        setattr(mcs, name, cls)
+        return cls
+
+    def __str__(cls):
+        return f"{cls.prod_name} {cls.prod_id}"
+
+    @classmethod
+    def __getitem__(mcs, item):
+        return mcs.PRODUCTS[item]
+
+    @staticmethod
+    def register_assumption(klass, **kwargs):
+        # fixme
+        return klass
+
+    @staticmethod
+    def register_assumption_method(func, **kwargs):
+        # fixme
+        return func
+
+
+class ProductBase(metaclass=ProductManager):
+
+    CashFlows: List[CashFlow]
+    """ 类成员， 保存了该产品的所有现金流 """
+
+    prod_id: int = 0
+    """ 产品识别码 """
+    prod_name: str = ""
+    """ 产品名称 """
+
+    def __get__(self, instance, owner):
+        if instance is None and owner is ProductManager:
+            return self
+
+    # def __init__(self, probabilityTables: Iterable[ProbabilityTable]):
+    #     self.probabilityTables = list(probabilityTables)
+
+    @classmethod
+    def getCashFlow(cls, cash_flow_cat: CashFlowCat, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH):
+        return reduce(lambda x, y: x + y, map(lambda c: c.getCashFlow(mp, from_init=from_init, time_scale=time_scale), filter(lambda c: c in cash_flow_cat, cls.CashFlows)))
+
+    # def __getattr__(self, name):
+    #     try:
+    #         return super().__getattribute__(name)
+    #     except AttributeError:
+    #         return
 
 
 class ProbabilityTable:
@@ -739,6 +913,37 @@ class ProbabilityTable:
             return probs
 
 
+class AssumptionMeta(type):
+    pass
+
+
+class Assumption(metaclass=AssumptionMeta):
+    pass
+
+
+class ProductAssumption(Assumption):
+
+    def __init__(self, prod_id):
+        """
+        :param prod_id: 产品的唯一识别码即精算代码
+        """
+        self.prod_id = prod_id
+
+    def __init_subclass__(cls, **kwargs):
+        return ProductManager.register_assumption(cls, **kwargs)
+
+    def __get__(self, instance, owner):
+        pass
+
+    def __set__(self, instance, value):
+        pass
+
+
+class ModelAssumption(Assumption):
+    pass
+
+
+# TODO
 class ProbabilityPac:
 
     def __init__(self, *args, prob_pac_index):
@@ -753,7 +958,7 @@ class ProbabilityPac:
         return next(self.getProbability(DeathBenefit))
 
     @property
-    def critical_illness_probability_table(self) -> ProbabilityTable:
+    def critical_illness_probability_table(self) -> Optional[ProbabilityTable]:
         try:
             return next(self.getProbability(IllnessBenefit))
         except StopIteration:
@@ -763,7 +968,7 @@ class ProbabilityPac:
     def accident_probability_table(self) -> Iterable[ProbabilityTable]:
         return self.getProbability(AccidentBenefit)
 
-    def __call__(self, mp: ModelPoint, from_init: bool=False, time_scale=MONTH, tunners: Dict[CashFlow, Callable]=None) -> OrderedDict:
+    def __call__(self, mp: ModelPoint, from_init: bool=False, time_scale=MONTH, tuners: Dict[CashFlow, Callable]=None) -> OrderedDict:
         # TODO: How to integrate TUNER ?
         pass
 
@@ -788,54 +993,6 @@ class ProbabilityPac:
             survival_rate *= (1 - lapse)
         if_eop = survival_rate.cumprod()
         return if_eop
-
-
-class ProductManager(type):
-
-    PRODUCTS = {}
-
-    def __new__(mcs, name, bases, namespace, *args, prod_id=None, prod_name=None, **kwargs):
-        if name in mcs.PRODUCTS:
-            raise ValueError(f"Product {name} already exists")
-        if prod_id is not None:
-            namespace['prod_id'] = prod_id
-        if prod_name is not None:
-            namespace['prod_name'] = prod_name
-
-        # init CashFlow's attribute ``index_in_product``
-        cfs: List[CashFlow] = [x for x in namespace.values() if isinstance(x, CashFlow)]
-        existed_cf_indexes = [x.index_in_product for x in cfs if x.index_in_product is not None]
-        assert len(existed_cf_indexes) == len(set(existed_cf_indexes))
-        for cf, idx in zip(filter(lambda x: x.index_in_product is None, cfs), [x for x in range(len(cfs)) if x not in existed_cf_indexes][:len(cfs) - len(existed_cf_indexes)]):
-            cf.index_in_product = idx
-
-        namespace["CashFlows"] = cfs
-        # init cls
-        cls = type.__new__(mcs, name, bases, namespace)
-        if name != "ProductBase":
-            mcs.PRODUCTS[cls.prod_id] = cls
-        setattr(mcs, name, cls)
-        return cls
-
-    def __str__(cls):
-        return f"{cls.prod_name} {cls.prod_id}"
-
-
-class ProductBase(metaclass=ProductManager):
-
-    CashFlows: List[CashFlow]
-    """ 类成员， 保存了该产品的所有现金流 """
-
-    def __get__(self, instance, owner):
-        if instance is None and owner is ProductManager:
-            return self
-
-    # def __init__(self, probabilityTables: Iterable[ProbabilityTable]):
-    #     self.probabilityTables = list(probabilityTables)
-
-    @classmethod
-    def getCashFlow(cls, cash_flow_cat: CashFlowCat, mp: ModelPoint, *, from_init: bool=False, time_scale: TimeScale=MONTH):
-        return reduce(lambda x, y: x + y, map(lambda c: c.getCashFlow(mp, from_init=from_init, time_scale=time_scale), filter(lambda c: c in cash_flow_cat, cls.CashFlows)))
 
 
 if __name__ == '__main__':
